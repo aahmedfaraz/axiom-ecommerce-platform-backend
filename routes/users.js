@@ -3,6 +3,8 @@ const router = express.Router();
 const jwt = require("jsonwebtoken");
 const { check, validationResult } = require("express-validator");
 const User = require("../models/user");
+const Cart = require("../models/cart");
+const Order = require("../models/orders");
 const config = require("config");
 const bcrypt = require("bcrypt");
 
@@ -49,6 +51,18 @@ router.post(
 
       // Add User in Database
       await user.save();
+
+      // Add Cart in Database
+      await new Cart({
+        ownerID: user.id,
+        products: [],
+      }).save();
+
+      // Add Orders Table in Database
+      await new Order({
+        ownerID: user.id,
+        products: [],
+      }).save();
 
       // Return jwt
       const payload = {

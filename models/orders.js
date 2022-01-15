@@ -7,31 +7,17 @@ const Order = mongoose.Schema({
   },
   products: [
     {
-      id: {
+      productID: {
         type: mongoose.Schema.Types.ObjectId,
-        required: true,
-      },
-      title: {
-        type: String,
-        required: true,
-      },
-      price: {
-        type: Number,
         required: true,
       },
       buyQuantity: {
         type: Number,
         required: true,
       },
-      buyer: {
-        id: {
-          type: mongoose.Schema.Types.ObjectId,
-          required: true,
-        },
-        name: {
-          type: String,
-          required: true,
-        },
+      buyerID: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
       },
     },
   ],
