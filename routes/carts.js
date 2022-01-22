@@ -16,10 +16,37 @@ router.get("/", auth, async (req, res) => {
     if (!cart) {
       return res.status(400).json({ msg: "Cart does not exist." });
     }
-    res.status(200).json({ cart });
+
+    let cartProducts = [];
+
+    cart.products.forEach(async (product) => {
+      const sellerProduct = await Product.findById(product.productID);
+      if (!sellerProduct) {
+        await Cart.findOneAndUpdate(
+          { "products.productID": product.productID },
+          {
+            $pull: {
+              products: {
+                productID: product.productID,
+              },
+            },
+          }
+        );
+      } else {
+        cartProducts[cartProducts.length] = {
+          ...sellerProduct,
+          selectedQuantity: product.selectedQuantity,
+        };
+      }
+    });
+
+    return res.status(200).json({
+      cart,
+      cartProducts,
+    });
   } catch (err) {
     console.log("Error ", err);
-    res.status(500).json({ msg: "Server Error" });
+    return res.status(500).json({ msg: "Server Error" });
   }
 });
 
@@ -53,26 +80,26 @@ router.post(
           .status(400)
           .json({ msg: "Product does not exist on Seller end." });
       }
+
+      // Check if selected quantity is valid
       if (req.body.selectedQuantity > sellerProduct.quantity) {
         return res.status(400).json({
           msg: `Product ${sellerProduct.title} has ${sellerProduct.quantity} units available only.`,
         });
       }
 
-      //   Add new product inside cart
-      const changes = {
-        products: [
-          ...cart.products,
-          {
-            productID: req.body.productID,
-            selectedQuantity: req.body.selectedQuantity,
+      // Add Product inside cart
+      const { productID, selectedQuantity } = req.body;
+      cart = await Cart.findOneAndUpdate(
+        { ownerID: req.user.id },
+        {
+          $push: {
+            products: {
+              productID,
+              selectedQuantity,
+            },
           },
-        ],
-      };
-
-      cart = await Cart.findByIdAndUpdate(
-        cart.id,
-        { $set: changes },
+        },
         { new: true }
       );
 
@@ -120,42 +147,29 @@ router.put(
           .json({ msg: "Product does not exist in your cart." });
       }
 
-      //   Check if cart is valid to update
-      let allProducts = cart.products.map(async (product) => {
-        if (product.id.toString() === req.params.productID) {
-          try {
-            let sellerProduct = await Product.findById(req.params.productID);
-            if (!sellerProduct) {
-              return res
-                .status(400)
-                .json({ msg: "Product does not exist on Seller end." });
-            }
-            if (req.body.selectedQuantity > sellerProduct.quantity) {
-              return res.status(400).json({
-                msg: `Product ${sellerProduct.title} has ${sellerProduct.quantity} units available only.`,
-              });
-            }
+      // Check if product is available on seller end
+      let sellerProduct = await Product.findById(req.params.productID);
+      if (!sellerProduct) {
+        return res
+          .status(400)
+          .json({ msg: "Product does not exist on Seller end." });
+      }
 
-            // Update Product inside Cart
-            return {
-              ...product,
-              selectedQuantity: req.body.selectedQuantity,
-            };
-          } catch (err) {
-            console.log("Error ", err);
-            return res.status(500).json({ msg: "Server Error" });
-          }
-        }
-        return product;
-      });
+      // Check if provided quantity is valid
+      if (req.body.selectedQuantity > sellerProduct.quantity) {
+        return res.status(400).json({
+          msg: `Product ${sellerProduct.title} has ${sellerProduct.quantity} units available only.`,
+        });
+      }
 
-      const changes = {
-        products: [...allProducts],
-      };
-
+      // Update cart product
       cart = await Cart.findOneAndUpdate(
-        { ownerID: req.user.id },
-        { $set: changes },
+        { "products.productID": req.params.productID },
+        {
+          $set: {
+            "products.$.selectedQuantity": req.body.selectedQuantity,
+          },
+        },
         { new: true }
       );
 
@@ -169,10 +183,10 @@ router.put(
   }
 );
 
-// @route DELETE /api/carts/:id
-// @desc Delete Cart Product
+// @route DELETE /api/carts/buy
+// @desc Buy All Cart Products
 // @acces Private
-router.delete("/:productID", auth, async (req, res) => {
+router.delete("/buy", auth, async (req, res) => {
   try {
     // Check if Cart exist
     let cart = await Cart.findOne({ ownerID: req.user.id });
@@ -180,33 +194,61 @@ router.delete("/:productID", auth, async (req, res) => {
       return res.status(400).json({ msg: "Cart does not exist." });
     }
 
-    //   Check if product exist inside cart
-    let productFound = false;
-    cart.products.forEach((product) => {
-      if (product.id === req.params.id) productFound = true;
+    // Validate availability and selected quantity of Products in Cart
+    cart.products.map(async (product) => {
+      let sellerProduct = await Product.findById(product.productID);
+      if (!sellerProduct) {
+        return res.status(400).json({
+          msg: `Product with ID ${product.productID} is not available.`,
+        });
+      }
+      if (product.selectedQuantity > sellerProduct.quantity) {
+        return res.status(400).json({
+          msg: `Product ${sellerProduct.title} has ${sellerProduct.quantity} units available only.`,
+        });
+      }
     });
-    if (!productFound) {
-      return res
-        .status(400)
-        .json({ msg: "Product does not exist in your cart." });
-    }
-    let product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(400).json({ msg: "Product does not exist" });
-    }
 
-    //   Remove Product
-    cart.products = cart.products.filter(
-      (product) => product.productID !== req.params.productID
-    );
+    // Buy all Products
+    cart.products.map(async (product) => {
+      let buyingProduct = await Product.findById(product.productID);
+      // update each product's stock quantiity
+      await Product.findByIdAndUpdate(
+        product.productID,
+        {
+          $set: {
+            quantity: buyingProduct.quantity - product.selectedQuantity,
+          },
+        },
+        {
+          $new: true,
+        }
+      );
+      // update sales on owner end of each product
+      await Order.findOneAndUpdate(
+        {
+          ownerID: buyingProduct.ownerID,
+        },
+        {
+          $push: {
+            products: {
+              productID: product.productID,
+              buyQuantity: product.selectedQuantity,
+              buyerID: req.user.id,
+            },
+          },
+        }
+      );
+    });
 
-    const changes = {
-      products: [...cart.products],
-    };
-
-    cart = await Cart.findByIdAndUpdate(
-      cart.id,
-      { $set: changes },
+    // Update cart
+    cart = await Cart.findOneAndUpdate(
+      { ownerID: req.user.id },
+      {
+        $set: {
+          products: [],
+        },
+      },
       { new: true }
     );
 
@@ -219,10 +261,10 @@ router.delete("/:productID", auth, async (req, res) => {
   }
 });
 
-// @route DELETE /api/carts/buy
-// @desc Buy All Cart Products
+// @route DELETE /api/carts/:productID
+// @desc Delete Cart Product
 // @acces Private
-router.delete("/buy", auth, async (req, res) => {
+router.delete("/:productID", auth, async (req, res) => {
   try {
     // Check if Cart exist
     let cart = await Cart.findOne({ ownerID: req.user.id });
@@ -230,57 +272,27 @@ router.delete("/buy", auth, async (req, res) => {
       return res.status(400).json({ msg: "Cart does not exist." });
     }
 
-    // Validate All Products in Cart
-    cart.products.map(async (product) => {
-      let sellerProduct = await Product.findById(product.productID);
-      if (product.selectedQuantity > sellerProduct.quantity) {
-        return res.status(400).json({
-          msg: `Product ${sellerProduct.title} has ${sellerProduct.quantity} units available only.`,
-        });
-      }
+    // Check if product exist inside cart
+    let productFound = false;
+    cart.products.forEach((product) => {
+      if (product.id === req.params.id) productFound = true;
     });
+    if (!productFound) {
+      return res
+        .status(400)
+        .json({ msg: "Product does not exist in your cart." });
+    }
 
-    // (BUY PRODUCTS) Update Seller Product & Update Orders Table
-    cart.products.map(async (product) => {
-      // Get Seller Product
-      let sellerProduct = await Product.findById(product.productID);
-      // Update Stocks
-      await Product.findByIdAndUpdate(
-        product.productID,
-        {
-          $set: {
-            quantity: sellerProduct.quantity - product.selectedQuantity,
+    // Remove Product inside cart
+    cart = await Cart.findOneAndUpdate(
+      { "products.productID": req.params.productID },
+      {
+        $pull: {
+          products: {
+            productID: req.params.productID,
           },
         },
-        { new: true }
-      );
-      // Update Sale record
-      let orders = await Order.findOne({ ownerID: req.user.id });
-      await Order.findByIdAndUpdate(
-        orders.id,
-        {
-          $set: {
-            products: [
-              ...orders.products,
-              {
-                productID: product.productID,
-                buyQuantity: product.selectedQuantity,
-                buyerID: req.user.id,
-              },
-            ],
-          },
-        },
-        { new: true }
-      );
-    });
-
-    // Update Cart
-    const changes = {
-      products: [],
-    };
-    cart = await Cart.findByIdAndUpdate(
-      cart.id,
-      { $set: changes },
+      },
       { new: true }
     );
 
