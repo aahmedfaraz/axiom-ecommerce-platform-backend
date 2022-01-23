@@ -17,28 +17,28 @@ router.get("/", auth, async (req, res) => {
       return res.status(400).json({ msg: "Cart does not exist." });
     }
 
-    let cartProducts = [];
-
-    cart.products.forEach(async (product) => {
-      const sellerProduct = await Product.findById(product.productID);
-      if (!sellerProduct) {
-        await Cart.findOneAndUpdate(
-          { "products.productID": product.productID },
-          {
-            $pull: {
-              products: {
-                productID: product.productID,
+    let cartProducts = await Promise.all(
+      cart.products.map(async (product) => {
+        const sellerProduct = await Product.findById(product.productID);
+        if (!sellerProduct) {
+          await Cart.findOneAndUpdate(
+            { "products.productID": product.productID },
+            {
+              $pull: {
+                products: {
+                  productID: product.productID,
+                },
               },
-            },
-          }
-        );
-      } else {
-        cartProducts[cartProducts.length] = {
-          ...sellerProduct,
-          selectedQuantity: product.selectedQuantity,
-        };
-      }
-    });
+            }
+          );
+        } else {
+          return {
+            ...sellerProduct._doc,
+            selectedQuantity: product.selectedQuantity,
+          };
+        }
+      })
+    );
 
     return res.status(200).json({
       cart,
